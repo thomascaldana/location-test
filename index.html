@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Localização</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh; overflow: hidden;
+        }
+        .container { height: 100vh; display: flex; flex-direction: column; }
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 1rem;
+            box-shadow: 0 2px 20px rgba(0, 0, 0, 0.1);
+            display: flex; justify-content: space-between; align-items: center;
+            flex-wrap: wrap; gap: 1rem; z-index: 1000;
+        }
+        .logo { font-size: 1.5rem; font-weight: bold; color: #333; display: flex; align-items: center; gap: 0.5rem; }
+        .status {
+            display: flex; align-items: center; gap: 0.5rem;
+            padding: 0.5rem 1rem; border-radius: 25px;
+            background: rgba(46, 125, 50, 0.1); border: 2px solid #2e7d32;
+            color: #1b5e20; font-weight: 500;
+        }
+        .status.loading { background: rgba(255, 152, 0, 0.1); border-color: #ff9800; color: #e65100; }
+        .status.error { background: rgba(244, 67, 54, 0.1); border-color: #f44336; color: #c62828; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #2e7d32; animation: pulse 2s infinite; }
+        .status.error .status-dot { background: #f44336; }
+        .header-right { display: flex; align-items: center; gap: 1rem; }
+        .btn {
+            background: linear-gradient(45deg, #667eea, #764ba2); color: white;
+            border: none; padding: 0.5rem 1rem; border-radius: 20px;
+            font-size: 0.9rem; font-weight: 500; cursor: pointer;
+            transition: all 0.3s ease; white-space: nowrap;
+        }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4); }
+        .btn:active { transform: translateY(0); }
+        .btn-help { background: #f5f5f5; color: #333; font-size: 0.8rem; padding: 0.4rem 0.8rem; }
+        .btn-help:hover { background: #e0e0e0; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1); }
+        @keyframes pulse { 0%{opacity:1;}50%{opacity:0.5;}100%{opacity:1;} }
+        .map-container { flex: 1; display: flex; justify-content: center; align-items: center; padding: 2rem; background: rgba(255, 255, 255, 0.1); }
+        #map {
+            width: 1000px; height: 600px; max-width: 90vw; max-height: 70vh;
+            border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            position: relative; z-index: 1;
+        }
+        .leaflet-popup-content-wrapper { border-radius: 10px; box-shadow: 0 5px 20px rgba(0,0,0,0.2); }
+        .leaflet-popup-content { font-size: 14px; line-height: 1.4; margin: 8px 12px; }
+        .person-popup { text-align: center; }
+        .person-name { font-weight: bold; color: #333; margin-bottom: 5px; }
+        .person-coords { color: #666; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="logo">📍 Sistema de Localização</div>
+            <div class="header-right">
+                <div class="status loading" id="locationStatus">
+                    <div class="status-dot"></div>
+                    <span>Obtendo localização...</span>
+                </div>
+                <button class="btn" onclick="forceRequestLocation()" id="locationBtn">Permitir Localização</button>
+                <button class="btn btn-help" onclick="showLocationHelp()">❓</button>
+            </div>
+        </header>
+
+        <div class="map-container">
+            <div id="map"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Dados fixos (antes eram gerados pelo PHP)
+        const pessoas = [
+            { nome: "Ana Silva", lat: -23.0830, lng: -46.9450 },
+            { nome: "Bruno Costa", lat: -23.0910, lng: -46.9540 },
+            { nome: "Carla Dias", lat: -23.0800, lng: -46.9590 },
+            { nome: "Daniel Martins", lat: -23.0950, lng: -46.9494 },
+            { nome: "Elisa Oliveira", lat: -23.0865, lng: -46.9390 }
+        ];
+
+        let map;
+        let userLocation = null;
+        let watchId = null;
+        const statusElement = document.getElementById('locationStatus');
+
+        function updateStatus(message, type = 'loading') {
+            statusElement.className = `status ${type}`;
+            statusElement.innerHTML = `<div class="status-dot"></div><span>${message}</span>`;
+        }
+
+        function initMap(lat = -23.0865, lng = -46.9450, zoom = 13) {
+            if (map) map.remove();
+            map = L.map('map').setView([lat, lng], zoom);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors',
+                maxZoom: 19
+            }).addTo(map);
+
+            pessoas.forEach(pessoa => {
+                L.marker([pessoa.lat, pessoa.lng])
+                  .addTo(map)
+                  .bindPopup(`
+                      <div class="person-popup">
+                          <div class="person-name">${pessoa.nome}</div>
+                          <div class="person-coords">${pessoa.lat.toFixed(4)}, ${pessoa.lng.toFixed(4)}</div>
+                      </div>
+                  `);
+            });
+        }
+
+        function addUserMarker(lat, lng) {
+            if (userLocation) map.removeLayer(userLocation);
+            const userIcon = L.divIcon({
+                html: '<div style="background:#ff4444;border:3px solid white;border-radius:50%;width:20px;height:20px;box-shadow:0 2px 10px rgba(0,0,0,0.3);animation:pulse 2s infinite;"></div>',
+                iconSize: [26, 26], iconAnchor: [13, 13], className: 'user-location-marker'
+            });
+            userLocation = L.marker([lat, lng], { icon: userIcon })
+                .addTo(map)
+                .bindPopup(`<div class="person-popup"><div class="person-name">🎯 Sua Localização</div><div class="person-coords">${lat.toFixed(4)}, ${lng.toFixed(4)}</div></div>`);
+            map.setView([lat, lng], 15);
+        }
+
+        function showLocationHelp() { alert("Ative a permissão de localização no seu navegador."); }
+
+        function handleLocationSuccess(position) {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+            initMap(lat, lng, 15);
+            addUserMarker(lat, lng);
+            updateStatus('Localização ativa', 'success');
+            watchId = navigator.geolocation.watchPosition(handleLocationUpdate, () => {});
+        }
+
+        function handleLocationUpdate(position) {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+            addUserMarker(lat, lng);
+        }
+
+        function handleLocationError() {
+            updateStatus('❌ Localização bloqueada - Clique no botão para permitir', 'error');
+            initMap();
+        }
+
+        function forceRequestLocation() {
+            updateStatus('Solicitando localização...', 'loading');
+            navigator.geolocation.getCurrentPosition(handleLocationSuccess, handleLocationError);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initMap();
+            updateStatus('Clique em "Permitir Localização" para começar', 'loading');
+        });
+    </script>
+
+    <style>
+        .user-location-marker { background: none !important; border: none !important; }
+        @keyframes pulse {
+            0%{transform:scale(1);opacity:1;}
+            50%{transform:scale(1.2);opacity:0.7;}
+            100%{transform:scale(1);opacity:1;}
+        }
+    </style>
+</body>
+</html>
